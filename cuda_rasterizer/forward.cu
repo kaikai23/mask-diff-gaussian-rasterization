@@ -159,6 +159,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	const float scale_modifier,
 	const glm::vec4* rotations,
 	const float* opacities,
+	const float* masks,
 	const float* shs,
 	bool* clamped,
 	const float* cov3D_precomp,
@@ -172,6 +173,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	int* radii,
 	float2* points_xy_image,
 	float* depths,
+	float* geom_masks,
 	float* cov3Ds,
 	float* rgb,
 	float4* conic_opacity,
@@ -248,6 +250,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 
 	// Store some useful helper data for the next steps.
 	depths[idx] = p_view.z;
+	geom_masks[idx] = masks[idx];
 	radii[idx] = my_radius;
 	points_xy_image[idx] = point_image;
 	// Inverse 2D covariance and opacity neatly pack into one float4
@@ -267,6 +270,7 @@ renderCUDA(
 	const float2* __restrict__ points_xy_image,
 	const float* __restrict__ features,
 	const float4* __restrict__ conic_opacity,
+	const float* __restrict__ masks,
 	float* __restrict__ final_T,
 	uint32_t* __restrict__ n_contrib,
 	const float* __restrict__ bg_color,
@@ -295,6 +299,7 @@ renderCUDA(
 	__shared__ int collected_id[BLOCK_SIZE];
 	__shared__ float2 collected_xy[BLOCK_SIZE];
 	__shared__ float4 collected_conic_opacity[BLOCK_SIZE];
+	__shared__ float collected_masks[BLOCK_SIZE];
 
 	// Initialize helper variables
 	float T = 1.0f;
@@ -318,6 +323,7 @@ renderCUDA(
 			collected_id[block.thread_rank()] = coll_id;
 			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
 			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
+			collected_masks[block.thread_rank()] = masks[coll_id];
 		}
 		block.sync();
 
@@ -332,6 +338,7 @@ renderCUDA(
 			float2 xy = collected_xy[j];
 			float2 d = { xy.x - pixf.x, xy.y - pixf.y };
 			float4 con_o = collected_conic_opacity[j];
+			float mask = collected_masks[j];
 			float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
 			if (power > 0.0f)
 				continue;
@@ -343,7 +350,7 @@ renderCUDA(
 			float alpha = min(0.99f, con_o.w * exp(power));
 			if (alpha < 1.0f / 255.0f)
 				continue;
-			float test_T = T * (1 - alpha);
+			float test_T = T * (1 - mask * alpha);
 			if (test_T < 0.0001f)
 			{
 				done = true;
@@ -352,7 +359,7 @@ renderCUDA(
 
 			// Eq. (3) from 3D Gaussian splatting paper.
 			for (int ch = 0; ch < CHANNELS; ch++)
-				C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
+				C[ch] += features[collected_id[j] * CHANNELS + ch] * mask * alpha * T;
 
 			T = test_T;
 
@@ -381,6 +388,7 @@ void FORWARD::render(
 	const float2* means2D,
 	const float* colors,
 	const float4* conic_opacity,
+	const float* masks,
 	float* final_T,
 	uint32_t* n_contrib,
 	const float* bg_color,
@@ -393,6 +401,7 @@ void FORWARD::render(
 		means2D,
 		colors,
 		conic_opacity,
+		masks,
 		final_T,
 		n_contrib,
 		bg_color,
@@ -405,6 +414,7 @@ void FORWARD::preprocess(int P, int D, int M,
 	const float scale_modifier,
 	const glm::vec4* rotations,
 	const float* opacities,
+	const float* masks,
 	const float* shs,
 	bool* clamped,
 	const float* cov3D_precomp,
@@ -418,6 +428,7 @@ void FORWARD::preprocess(int P, int D, int M,
 	int* radii,
 	float2* means2D,
 	float* depths,
+	float* geom_masks,
 	float* cov3Ds,
 	float* rgb,
 	float4* conic_opacity,
@@ -432,6 +443,7 @@ void FORWARD::preprocess(int P, int D, int M,
 		scale_modifier,
 		rotations,
 		opacities,
+		masks,
 		shs,
 		clamped,
 		cov3D_precomp,
@@ -445,6 +457,7 @@ void FORWARD::preprocess(int P, int D, int M,
 		radii,
 		means2D,
 		depths,
+		geom_masks,
 		cov3Ds,
 		rgb,
 		conic_opacity,
